@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+#ignoro il file dei pesi del modello addestrato, che è un file binario che non ha senso tenere in git e che può essere rigenerato ogni volta che serve a partire dal codice di training
+.pth
+.ipynb_checkpoints/
