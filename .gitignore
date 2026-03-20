@@ -1,0 +1,25 @@
+__pycache__/
+.git/
+data/VOCdevkit/
+# Dataset e file pesanti (come il tuo caso attuale)
+data/
+*.zip
+*.tar.gz
+
+# Python: file compilati (bytecode) che sporcano i commit
+__pycache__/
+*.py[cod]
+
+# Ambienti virtuali (NON si caricano mai su Git, si ricreano con i requisiti)
+venv/
+.venv/
+env/
+
+
+# File di configurazione dell'IDE
+.vscode/
+.idea/
+
+*.csv
+*.pth
+*.ipynb_checkpoints/
