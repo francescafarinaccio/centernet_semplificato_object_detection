@@ -17,8 +17,6 @@ class SimpleCenterNet(nn.Module):
         )
 
         # DECODER (Ritorno a 1/4 o risoluzione piena se necessario)
-        # Se vuoi l'output a 1/4 (32x32), lasciamo così. 
-        # Se lo vuoi a risoluzione piena, servirebbero dei ConvTranspose2d.
         self.neck = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
@@ -31,8 +29,10 @@ class SimpleCenterNet(nn.Module):
             nn.Sigmoid() 
         )
         
+        # L'offset head restituisce 2 canali: dx e dy
         self.offset_head = nn.Conv2d(64, 2, kernel_size=1)
 
+    #funzione forward che restituisce sia heatmap che offset
     def forward(self, x):
         features = self.enc(x)
         features = self.neck(features)
@@ -42,7 +42,7 @@ class SimpleCenterNet(nn.Module):
         return hm, off
 
     # Funzione di inferenza per ottenere le coordinate dei picchi
-    @torch.no_grad()
+    @torch.no_grad() # Non calcoliamo i gradienti durante l'inferenza
     def predict(self, x, threshold=0.3, stride=4):
         self.eval()
         # Ottieni SOLO la heatmap per l'inferenza dei picchi
@@ -72,6 +72,7 @@ class SimpleCenterNet(nn.Module):
             res_x = (x_coord + dx) * stride
             res_y = (y + dy) * stride
             
+            # Restituiamo un tensore di shape [N, 2] con le coordinate (x, y) dei picchi
             return torch.stack([res_x, res_y], dim=1)
-        
+        # Se non ci sono picchi sopra la soglia, restituiamo un tensore vuoto
         return torch.tensor([])

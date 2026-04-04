@@ -17,6 +17,7 @@ VAL_DIR = "datasetLOGOS/valid" # Meglio testare sulla cartella valid
 VAL_ANN_FILE = os.path.join(VAL_DIR, "_annotations.coco.json")
 checkpoint_path = "checkpoints/centernet_logo_simplified.pth"
 
+# Funzione di inferenza per testare il modello su un'immagine a caso dal dataset di validazione
 def run_inference(model_path=checkpoint_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     

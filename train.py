@@ -3,7 +3,6 @@ import torch.nn as nn
 import os
 import torch.optim as optim
 from torch.utils.data import DataLoader
-# Assicurati che il nome del file del dataset sia corretto (es. dataset.py)
 from logo_dataset import LogoDataset 
 from model import SimpleCenterNet
 
@@ -66,6 +65,7 @@ def train():
     criterion_hm = nn.MSELoss() if not use_focal else focal_loss
     criterion_reg = nn.L1Loss(reduction='sum') 
     
+    #ottimizzatore Adam che aggiorna tutti i parametri del modello (sia quelli della heatmap che dell'offset)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
     # 3. Ciclo di Addestramento
@@ -78,7 +78,7 @@ def train():
             t_hm = targets['hm'].to(device)
             t_off = targets['reg'].to(device)
 
-            # Forward pass (ritorna solo 2 output ora)
+            # Forward pass 
             p_hm, p_off = model(inputs)
 
             # --- CALCOLO LOSS ---

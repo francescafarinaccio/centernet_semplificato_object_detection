@@ -40,20 +40,20 @@ class LogoDataset(Dataset):
             image_tensor = self.transform(image_resized)
         else:
             # Normalizzazione base se non passi trasformazioni esterne
-            img_np = np.array(image_resized).astype(np.float32) / 255.0
-            image_tensor = torch.from_numpy(img_np).permute(2, 0, 1)
+            img_np = np.array(image_resized).astype(np.float32) / 255.0 # Normalizzazione [0, 1]
+            image_tensor = torch.from_numpy(img_np).permute(2, 0, 1) # Converti in CxHxW
             # Normalizzazione ImageNet standard
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            image_tensor = (image_tensor - mean) / std
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1) # Perché è un tensore di shape [3, 1, 1] che si adatta a CxHxW
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1) 
+            image_tensor = (image_tensor - mean) / std # Normalizzazione
 
         # 2. Preparazione Output (Heatmap e Offset)
         stride = 4
-        out_h, out_w = input_h // stride, input_w // stride # 32x32
+        out_h, out_w = input_h // stride, input_w // stride # Output a 1/4 della risoluzione originale (32x32)
         
         # Inizializziamo heatmap e offset a zero
-        hm = np.zeros((1, out_h, out_w), dtype=np.float32)
-        reg = np.zeros((2, out_h, out_w), dtype=np.float32)
+        hm = np.zeros((1, out_h, out_w), dtype=np.float32) # 1 canale per la heatmap
+        reg = np.zeros((2, out_h, out_w), dtype=np.float32) # 2 canali per l'offset (dx, dy)
 
         scale_x, scale_y = input_w / w_orig, input_h / h_orig
 
@@ -90,5 +90,6 @@ class LogoDataset(Dataset):
             'reg': torch.from_numpy(reg)
         }
 
+    # La lunghezza del dataset è il numero di immagini con annotazioni
     def __len__(self):
         return len(self.img_ids)
