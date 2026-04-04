@@ -1,60 +1,74 @@
-# utilizzo questo file per le formule matematiche e funzioni di utilità che voglio tenere separate dal resto del codice
-
 
 import torch
 import torch.nn.functional as F
 import numpy as np
 
-#funzione di estrazione dei picchi locali da una heatmap usando MaxPool2d come NMS
-def get_peaks(heatmap, threshold=0.3):
-    # 1. Trova i massimi locali
-    # Un kernel 3x3 confronta ogni pixel con i suoi vicini
-    hmax = F.max_pool2d(heatmap, kernel_size=3, stride=1, padding=1)
+
+# Funzioni di utilità per il disegno della gaussiana, estrazione dei picchi e decodifica delle predizioni
+def draw_gaussian(heatmap, center, radius, k=1):
+
+    diameter = 2 * radius + 1
+    sigma = diameter / 6
+    x, y = int(center[0]), int(center[1])
+
+    height, width = heatmap.shape[0:2]
+
+    # Definiamo i confini della sottomatrice per non uscire dai bordi
+    left, right = min(x, radius), min(width - x - 1, radius)
+    top, bottom = min(y, radius), min(height - y - 1, radius)
+
+    masked_heatmap  = heatmap[y - top:y + bottom + 1, x - left:x + right + 1]
     
-    # 2. Mantieni solo i pixel che sono rimasti invariati (erano già i massimi)
+    # Generiamo la gaussiana locale
+    y_grid, x_grid = np.ogrid[-top:bottom + 1, -left:right + 1]
+    g = np.exp(-(x_grid**2 + y_grid**2) / (2 * sigma**2))
+    g[g < np.finfo(g.dtype).eps * g.max()] = 0
+    
+    # Applichiamo il massimo tra il valore esistente e la nuova gaussiana
+    np.maximum(masked_heatmap, g * k, out=masked_heatmap)
+    return heatmap
+
+# Funzione per estrarre i picchi dalla heatmap (usata in inference.py)
+def get_peaks(heatmap, threshold=0.4):
+    # NMS spaziale 3x3
+    hmax = F.max_pool2d(heatmap, kernel_size=3, stride=1, padding=1)
     keep = (hmax == heatmap).float()
     peaks = heatmap * keep
     
-    # 3. Filtra per soglia di confidenza
-    # Restituisce gli indici dove il valore è > threshold
-    # Il formato è [N, 4] -> [Batch, Canale, Y, X]
+    # Estrazione indici e score
+    # indices: [N, 4] -> (B, C, Y, X)
     indices = torch.nonzero(peaks > threshold)
+    scores = peaks[peaks > threshold]
     
-    return indices
-#funzione per disegnare una gaussiana su una heatmap, usata per creare le heatmap di addestramento
-def draw_gaussian(heatmap, center, sigma):
-    gh, gw = heatmap.shape
-    x, y = center
-    y_grid, x_grid = np.ogrid[0:gh, 0:gw]
-    d2 = (x_grid - x)**2 + (y_grid - y)**2
-    g = np.exp(-d2 / (2 * sigma**2))
-    return np.maximum(heatmap, g)
+    return indices, scores
 
-# Questa funzione prende le predizioni di heatmap, offset e size e restituisce le coordinate finali del bounding box
-def get_final_box(pred_hm, pred_off, pred_sz, stride=4, img_size=128):
-    # 1. Troviamo il pixel più "caldo" (il centro nella mappa 32x32)
-    idx = torch.argmax(pred_hm)
-    iy = idx // 32
-    ix = idx % 32
+#
+def get_gaussian_radius(box_size):
+    h, w = box_size
+    # Il raggio minimo garantisce che la "macchia" sia visibile anche per loghi piccoli
+    return max(2, int(min(w, h) * 0.3))
 
-    # 2. Recuperiamo l'offset e la dimensione previsti in quel punto specifico
-    # (Usiamo .item() per trasformare il tensore in un numero Python)
-    off_x = pred_off[0, iy, ix].item()
-    off_y = pred_off[1, iy, ix].item()
+# Funzione per decodificare le predizioni del modello in coordinate reali (usata in inference.py)
+def decode_predictions(pred_hm, pred_off, threshold=0.4, stride=4):
+
+    indices, scores = get_peaks(pred_hm, threshold)
     
-    w_rel = pred_sz[0, iy, ix].item()
-    h_rel = pred_sz[1, iy, ix].item()
-
-    # 3. Calcoliamo il centro reale nell'immagine 128x128
-    cx = (ix + off_x) * stride
-    cy = (iy + off_y) * stride
-
-    # 4. Calcoliamo larghezza e altezza reali
-    W = w_rel * img_size
-    H = h_rel * img_size
-
-    # 5. Coordinate per il disegno (Top-Left e Bottom-Right)
-    x1, y1 = int(cx - W/2), int(cy - H/2)
-    x2, y2 = int(cx + W/2), int(cy + H/2)
-
-    return (x1, y1), (x2, y2)
+    results = []
+    for i in range(len(indices)):
+        batch, ch, iy, ix = indices[i]
+        score = scores[i].item()
+        
+        # Recupero offset (canale 0 = dx, canale 1 = dy)
+        off_x = pred_off[batch, 0, iy, ix].item()
+        off_y = pred_off[batch, 1, iy, ix].item()
+        
+        # Coordinate finali scalate
+        cx = (ix.item() + off_x) * stride
+        cy = (iy.item() + off_y) * stride
+        
+        results.append({
+            'center': (cx, cy),
+            'score': score
+        })
+        
+    return results

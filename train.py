@@ -1,111 +1,119 @@
-#per l'addestramento del modello, definisco qui il ciclo di training, la loss e l'ottimizzatore. 
-
-from pyexpat import model
-
 import torch
 import torch.nn as nn
-import os #per gestire le cartelle e i file
+import os
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from dataset import CenterNetDataset
+# Assicurati che il nome del file del dataset sia corretto (es. dataset.py)
+from logo_dataset import LogoDataset 
 from model import SimpleCenterNet
 
-save_dir='checkpoints' #cartella dove salvare i pesi del modello
+# --- CONFIGURAZIONE ---
+save_dir = 'checkpoints'
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
-    print(f"Cartella '{save_dir}' creata con successo")
 
-# Definizione della loss per CenterNet, che combina la heatmap loss (MSE) con le regression loss (L1) per offset e size, bilanciando i pesi tra di loro.
-def criterion_centernet(preds, targets):
-    # Predizioni del modello: [batch, canali, 32, 32]
-    p_hm, p_off, p_sz = preds
-    # Target del dataset: [batch, canali, 32, 32]
-    t_hm, t_off, t_sz = targets
+train_img_dir = "datasetLOGOS/train"
+train_ann_file = os.path.join(train_img_dir, "_annotations.coco.json")
 
-    # 1. Heatmap Loss (MSE) - Focalizza la posizione generale
-    loss_hm = nn.MSELoss()(p_hm, t_hm)
-
-    # 2. Offset Loss (L1 + Maschera) - Precisione sub-pixel
-    # Moltiplichiamo per t_hm per ignorare lo sfondo
-    loss_off = nn.L1Loss()(p_off * t_hm, t_off * t_hm)
-
-    # 3. Size Loss (L1 + Maschera) - Dimensioni (W, H)
-    loss_sz = nn.L1Loss()(p_sz * t_hm, t_sz * t_hm)
-
-    # Somma finale con pesi bilanciati
-    # Spesso si usa 1.0 per hm e off, e 0.1 per sz
-    total_loss = loss_hm + 1.0 * loss_off + 0.1 * loss_sz
+# --- LOSS FUNCTIONS ---
+# Implementazione della Focal Loss per la heatmap (consigliata per problemi di rilevamento con classi sbilanciate)
+def focal_loss(preds, targets, alpha=2, beta=4):
+   
+        # Clamping per evitare log(0) o log(1) - dà stabilità numerica
+    preds = torch.clamp(preds, min=1e-4, max=1 - 1e-4)
     
-    return total_loss
+    # Creazione di maschere per posizioni positive (dove target == 1) e negative (dove target < 1)
+    pos_inds = targets.eq(1).float()
+    neg_inds = targets.lt(1).float()
 
-# La funzione di training esegue il ciclo di addestramento per un certo numero di epoche, iterando sui dati, calcolando la loss e aggiornando i pesi del modello. 
-# Alla fine salva i pesi in un file .pth.
+    # Peso che attenua la loss vicino ai centri (usa la gaussiana nel target)
+    neg_weights = torch.pow(1 - targets, beta)
+
+    pos_loss = torch.log(preds) * torch.pow(1 - preds, alpha) * pos_inds
+    neg_loss = torch.log(1 - preds) * torch.pow(preds, alpha) * neg_weights * neg_inds
+
+    num_pos = pos_inds.sum()
+    pos_loss = pos_loss.sum()
+    neg_loss = neg_loss.sum()
+
+    #la funzione somma tutte le perdite e le divide per num pos (il num dei loghi presenti nell'immagine) 
+    #se non ci sono oggetti (num_pos == 0), restituisce solo la perdita negativa, evitando la divisione per zero.
+    if num_pos == 0:
+        return -neg_loss
+    return -(pos_loss + neg_loss) / num_pos
+
 def train():
-    
     # --- IPERPARAMETRI ---
     batch_size = 16
-    learing_rate = 1e-3  # ovvero 0.001
-    epochs = 20
+    learning_rate = 1e-3
+    epochs = 35
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    save_path = os.path.join(save_dir, f"centernet_v1.pth")
-     
+    save_path = os.path.join(save_dir, "centernet_logo_simplified.pth")
     
+    # Flag per decidere se usare MSE o Focal Loss 
+    use_focal = True 
+
     print(f"Addestramento su: {device}")
 
-    # 2. Dati
-    dataset = CenterNetDataset(num_samples=2000) # Un po' di campioni per imparare
-    train_loader = DataLoader(dataset, batch_size, shuffle=True)
+    # 1. Caricamento Dataset
+    train_dataset = LogoDataset(train_img_dir, train_ann_file)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
-    # 3. Modello, Loss e Optimizer
+    # 2. Modello, Loss e Ottimizzatore
     model = SimpleCenterNet().to(device)
-    criterion_hm = nn.MSELoss()
-    criterion_reg = nn.L1Loss()
-    optimizer = optim.Adam(model.parameters(), lr=learing_rate) 
+    
+    # MSE per la heatmap (opzione iniziale) o L1 per l'offset
+    criterion_hm = nn.MSELoss() if not use_focal else focal_loss
+    criterion_reg = nn.L1Loss(reduction='sum') 
+    
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate) 
 
-    # 4. Ciclo di Addestramento (Training Loop)
+    # 3. Ciclo di Addestramento
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
 
-        # 1. Estraiamo i dati dal dataloader
-        for inputs, t_hm, t_off, t_sz in train_loader:
-    
-    # Spostiamo i dati sulla GPU se disponibile
+        for inputs, targets in train_loader:
             inputs = inputs.to(device)
-            t_hm = t_hm.to(device)
-            t_off = t_off.to(device)
-            t_sz = t_sz.to(device)
+            t_hm = targets['hm'].to(device)
+            t_off = targets['reg'].to(device)
 
-    # 2. Forward pass: il modello restituisce una tupla
-            p_hm, p_off, p_sz = model(inputs)
+            # Forward pass (ritorna solo 2 output ora)
+            p_hm, p_off = model(inputs)
 
-    # 3. Calcolo delle singole loss
-    #alla heatmpa non applico nessuna maschera perché deve imparare a ricostruire l'intera mappa, compresi gli zeri (sfondo) e la campana gaussiana (centro)
-            loss_heatmap = criterion_hm(p_hm, t_hm)
-    
-    # Creiamo una msschera binaria 1 dove c'è l'oggetto, 0 altrove
-    #per l'offset e la size non voglio utilizzare ma schera che dà importanza solo al centro dell'immagine ma deve guardare a tutta l'immagine
-            mask = (t_hm > 0).float()
-    # Usiamo la heatmap reale come maschera per focalizzarci solo sui centri
-            loss_offset = criterion_reg(p_off * mask, t_off * mask)
-            loss_size = criterion_reg(p_sz * mask, t_sz * mask)
+            # --- CALCOLO LOSS ---
+            
+            # 1. Heatmap Loss
+            if use_focal:
+                loss_heatmap = focal_loss(p_hm, t_hm)
+            else:
+                loss_heatmap = criterion_hm(p_hm, t_hm)
+            
+            # 2. Offset Loss (calcolata solo dove c'è un oggetto reale)
+            # Creiamo una maschera dai punti dove la heatmap target è esattamente 1
+            mask = (t_hm == 1).float() 
+            num_objects = mask.sum() + 1e-4
+            
+            # Applichiamo la maschera su entrambi i canali dell'offset (dx, dy)
+            # Espandiamo la maschera per coprire i 2 canali dell'offset
+            mask_off = mask.repeat(1, 2, 1, 1) 
+            loss_offset = criterion_reg(p_off * mask_off, t_off * mask_off) / num_objects
 
-    # 4. Loss Totale (bilanciata con i pesi lambda)
-            total_loss = loss_heatmap + (1.0 * loss_offset) + (0.1 * loss_size)
+            # Somma totale: diamo peso maggiore alla heatmap per stabilizzare il training
+            total_loss = (loss_heatmap * 1.0) + (loss_offset * 0.8)
 
-    # 5. Backpropagation
+            # Backpropagation
             optimizer.zero_grad()
             total_loss.backward()
-            # Accumula la loss per il reporting
-            running_loss += total_loss.item()
             optimizer.step()
 
-        print(f"Epoca [{epoch+1}/{epochs}], Loss: {running_loss/len(train_loader):.6f}") # Stampa la loss media per epoca
+            running_loss += total_loss.item()
 
-    
-  # Salva i pesi del modello alla fine
+        print(f"Epoca [{epoch+1}/{epochs}], Loss Totale: {running_loss/len(train_loader):.6f}")
+
+    # Salvataggio del modello ottimizzato
     torch.save(model.state_dict(), save_path)
-    print("Addestramento completato e modello salvato in :", save_path)
+    print(f"Modello salvato in {save_path}")
 
 if __name__ == "__main__":
     train()

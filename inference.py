@@ -1,85 +1,84 @@
 import torch
+import torch.nn.functional as F
+from torchvision import transforms as T
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from dataset import CenterNetDataset
+import numpy as np
+from PIL import Image
+import os
+import random
+
+# Import dai tuoi file locali
 from model import SimpleCenterNet
-import model
-from utils import get_peaks 
+from utils import get_peaks, decode_predictions
+from logo_dataset import LogoDataset 
 
-#in inference, carico il modello addestrato, prendo un'immagine di test, faccio la predizione e visualizzo i risultati.
+# Percorsi
+VAL_DIR = "datasetLOGOS/valid" # Meglio testare sulla cartella valid
+VAL_ANN_FILE = os.path.join(VAL_DIR, "_annotations.coco.json")
+checkpoint_path = "checkpoints/centernet_logo_simplified.pth"
 
-
-
-def run_inference(model_path="checkpoints/centernet_v1.pth"):
-    # 1. Setup Device
+def run_inference(model_path=checkpoint_path):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 2. Carica Modello e Pesi
+    
+    # 1. Carica Modello
     model = SimpleCenterNet().to(device)
-    model.load_state_dict(torch.load(model_path))
-    #in modalità valutazione, il modello non aggiorna i pesi e non applica dropout o batchnorm
-    model.eval() 
-    print("Modello caricato correttamente.")
+    if not os.path.exists(model_path):
+        print(f"ERRORE: Checkpoint non trovato in {model_path}")
+        return
 
-    # 3. Prendi un'immagine di test
-    test_dataset = CenterNetDataset(num_samples=1)
-    image, true_heatmap, true_offset, true_size = test_dataset[0]
-    image_input = image.unsqueeze(0).to(device) # Aggiungi dimensione batch [1, 1, 128, 128]
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+    print(f"Modello caricato da {model_path}")
 
-    # 4. Inferenza (Predizione)
-    with torch.no_grad(): # Disabilita gradienti per risparmiare memoria
-        p_hm, p_off, p_sz = model(image_input)
+    # 2. Inizializzazione Dataset
+    dataset = LogoDataset(img_dir=VAL_DIR, ann_file=VAL_ANN_FILE)
+    
+    # 3. Selezione casuale di un'immagine dal dataset
+    idx = random.randint(0, len(dataset) - 1)
+    image_tensor, target = dataset[idx]
+    
+    # 4. Esecuzione Modello
+    image_input = image_tensor.unsqueeze(0).to(device)
+    with torch.no_grad():
+        # Il modello ora restituisce solo Heatmap e Offset
+        p_hm, p_off = model(image_input)
 
-    # Sposta heatmap su CPU per post-processing
-    p_hm = p_hm.cpu()
+    # 5. Decodifica Predizioni (Usa la funzione in utils.py)
+    # Restituisce una lista di dict con 'center' e 'score'
+    detections = decode_predictions(p_hm, p_off, threshold=0.3, stride=4)
+    
+    print(f"DEBUG - Massimo heatmap: {p_hm.max().item():.4f}")
+    print(f"Loghi trovati: {len(detections)}")
 
-    # 5. Estrai i centri (con stride 4)
-    # get_peaks restituisce [N, 4] -> [Batch, Channel, Y, X]
-    indices = get_peaks(p_hm, threshold=0.3)
+    # 6. Visualizzazione
+    fig, ax = plt.subplots(1, 2, figsize=(14, 7))
 
-    # Visualizzazione
-    fig, ax = plt.subplots(1, 1, figsize=(6, 6))
-    ax.imshow(image[0].numpy(), cmap='gray') # Mostra immagine originale (128x128)
-    ax.set_title("Predizione vs Ground Truth")
+    # --- DENORMALIZZAZIONE PER LA VISUALIZZAZIONE ---
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    
+    img_viz = image_tensor.cpu() * std + mean
+    img_viz = torch.clamp(img_viz, 0, 1)
+    img_show = img_viz.permute(1, 2, 0).numpy()
 
-    # Disegna centri trovati
-    stride = 4 # Fattore di scala 
-    if indices.shape[0] > 0:
-        for idx in indices:
-            y, x = idx[2], idx[3] # Coordinate nella heatmap 32x32
+    # Subplot 1: Immagine + Centri Predetti
+    ax[0].imshow(img_show)
+    ax[0].set_title(f"Rilevamento Loghi ({len(detections)} trovati)")
+    
+    for det in detections:
+        cx, cy = det['center']
+        score = det['score']
+        # Disegna una croce rossa sul centro predetto
+        ax[0].plot(cx, cy, 'r+', markersize=12, markeredgewidth=2)
+        ax[0].text(cx, cy - 5, f"{score:.2f}", color='red', fontsize=10, fontweight='bold')
 
-            # 1. Estrai offset e dimensioni (usando indici y, x)
-            off_x = p_off[0, 0, y, x].item()
-            off_y = p_off[0, 1, y, x].item()
-            w_norm = p_sz[0, 0, y, x].item()
-            h_norm = p_sz[0, 1, y, x].item()
-            # Prendi coordinate Y (indice 2) e X (indice 3)
-            
-            # 2. Calcola il centro preciso (con offset) e riportalo a 128px
-            center_x = x.item() * stride
-            center_y = y.item() * stride
-            # 3. Denormalizza le dimensioni (W e H)
-            w_pixel = w_norm * 128
-            h_pixel = h_norm * 128
+    # Subplot 2: Heatmap
+    heatmap_show = p_hm.squeeze().cpu().numpy()
+    im = ax[1].imshow(heatmap_show, cmap='magma', vmin=0, vmax=1)
+    fig.colorbar(im, ax=ax[1], fraction=0.046, pad=0.04)
+    ax[1].set_title("Heatmap Predetta (32x32)")
 
-            # 4. Trova l'angolo in alto a sinistra per il rettangolo
-            box_x = center_x - (w_pixel / 2)
-            box_y = center_y - (h_pixel / 2)
-
-            # Disegna punto rosso nel cerchio per indicare il centro predetto
-            circle = patches.Circle((center_x, center_y), radius=3, color='red', fill=True, label='Predetto')
-            #disegnno la BB
-            rect = patches.Rectangle((box_x, box_y), w_pixel, h_pixel, linewidth=1, edgecolor='red', facecolor='none')
-            
-            ax.add_patch(rect)
-            ax.add_patch(circle)
-            print(f"Oggetto trovato a coordinate: ({center_x:.1f}, {center_y:.1f})")
-
-
-    else:
-        print("Nessun oggetto trovato sopra la soglia.")
-
-    plt.legend(["Predetto (Punto Rosso)"])
+    plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
