@@ -8,7 +8,7 @@ from utils import draw_gaussian, get_gaussian_radius
 
 class LogoDataset(Dataset):
     def __init__(self, img_dir, ann_file, transform=None):
-        self.coco = COCO(ann_file)
+        self.coco = COCO(ann_file) #leggo il json con le annotazioni
         self.img_dir = img_dir
         self.transform = transform
         
@@ -20,7 +20,7 @@ class LogoDataset(Dataset):
             if len(ann_ids) > 0:
                 self.img_ids.append(img_id)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx): #Restituisce un'immagine e il suo target (heatmap + offset)
         img_id = self.img_ids[idx]
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         anns = self.coco.loadAnns(ann_ids) # Carico tutte le annotazioni per questa immagine
@@ -47,6 +47,7 @@ class LogoDataset(Dataset):
             std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1) 
             image_tensor = (image_tensor - mean) / std # Normalizzazione
 
+        
         # 2. Preparazione Output (Heatmap e Offset)
         stride = 4
         out_h, out_w = input_h // stride, input_w // stride # Output a 1/4 della risoluzione originale (32x32)
@@ -55,7 +56,7 @@ class LogoDataset(Dataset):
         hm = np.zeros((1, out_h, out_w), dtype=np.float32) # 1 canale per la heatmap
         reg = np.zeros((2, out_h, out_w), dtype=np.float32) # 2 canali per l'offset (dx, dy)
 
-        scale_x, scale_y = input_w / w_orig, input_h / h_orig
+        scale_x, scale_y = input_w / w_orig, input_h / h_orig # Fattori di scala per adattare le coordinate originali alla risoluzione 128x128
 
         # 3. Ciclo su tutti i loghi presenti nell'immagine
         for ann in anns:
@@ -73,7 +74,7 @@ class LogoDataset(Dataset):
             
             ct_int = ct.astype(np.int32)
 
-            # Validazione confini
+            # Verifica che il centro discretizzato sia all'interno dei confini dell'output
             if 0 <= ct_int[0] < out_w and 0 <= ct_int[1] < out_h:
                 # Disegno Gaussiana (usiamo un raggio minimo di 2 per visibilità)
                 radius = get_gaussian_radius((h128 / stride, w128 / stride))
@@ -85,7 +86,7 @@ class LogoDataset(Dataset):
                 reg[0, ct_int[1], ct_int[0]] = ct[0] - ct_int[0]
                 reg[1, ct_int[1], ct_int[0]] = ct[1] - ct_int[1]
 
-        return image_tensor, {
+        return image_tensor, { #trasformo gli array numpy in tensori torch
             'hm': torch.from_numpy(hm),
             'reg': torch.from_numpy(reg)
         }

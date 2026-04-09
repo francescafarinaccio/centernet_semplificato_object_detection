@@ -26,7 +26,7 @@ def run_inference(model_path=checkpoint_path):
     if not os.path.exists(model_path):
         print(f"ERRORE: Checkpoint non trovato in {model_path}")
         return
-
+    #inietto i pesi salvati nell'architettura vuota del modello
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     print(f"Modello caricato da {model_path}")
@@ -39,9 +39,10 @@ def run_inference(model_path=checkpoint_path):
     image_tensor, target = dataset[idx]
     
     # 4. Esecuzione Modello
+    # con unsqueeze aggiungo la dimensione del batch - il modello si aspetta un input 4D
     image_input = image_tensor.unsqueeze(0).to(device)
     with torch.no_grad():
-        # Il modello ora restituisce solo Heatmap e Offset
+        #eseguo il forward pass per ottenere heatmap e offset
         p_hm, p_off = model(image_input)
 
     # 5. Decodifica Predizioni (Usa la funzione in utils.py)
@@ -55,6 +56,7 @@ def run_inference(model_path=checkpoint_path):
     fig, ax = plt.subplots(1, 2, figsize=(14, 7))
 
     # --- DENORMALIZZAZIONE PER LA VISUALIZZAZIONE ---
+    #le immagini denormalizzate per il training vengono ripristinate alla loro forma originale
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     

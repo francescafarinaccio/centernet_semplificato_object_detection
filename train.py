@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from logo_dataset import LogoDataset 
 from model import SimpleCenterNet
+from utils import focal_loss
 
 # --- CONFIGURAZIONE ---
 save_dir = 'checkpoints'
@@ -14,32 +15,6 @@ if not os.path.exists(save_dir):
 train_img_dir = "datasetLOGOS/train"
 train_ann_file = os.path.join(train_img_dir, "_annotations.coco.json")
 
-# --- LOSS FUNCTIONS ---
-# Implementazione della Focal Loss per la heatmap (consigliata per problemi di rilevamento con classi sbilanciate)
-def focal_loss(preds, targets, alpha=2, beta=4):
-   
-        # Clamping per evitare log(0) o log(1) - dà stabilità numerica
-    preds = torch.clamp(preds, min=1e-4, max=1 - 1e-4)
-    
-    # Creazione di maschere per posizioni positive (dove target == 1) e negative (dove target < 1)
-    pos_inds = targets.eq(1).float()
-    neg_inds = targets.lt(1).float()
-
-    # Peso che attenua la loss vicino ai centri (usa la gaussiana nel target)
-    neg_weights = torch.pow(1 - targets, beta)
-
-    pos_loss = torch.log(preds) * torch.pow(1 - preds, alpha) * pos_inds
-    neg_loss = torch.log(1 - preds) * torch.pow(preds, alpha) * neg_weights * neg_inds
-
-    num_pos = pos_inds.sum()
-    pos_loss = pos_loss.sum()
-    neg_loss = neg_loss.sum()
-
-    #la funzione somma tutte le perdite e le divide per num pos (il num dei loghi presenti nell'immagine) 
-    #se non ci sono oggetti (num_pos == 0), restituisce solo la perdita negativa, evitando la divisione per zero.
-    if num_pos == 0:
-        return -neg_loss
-    return -(pos_loss + neg_loss) / num_pos
 
 def train():
     # --- IPERPARAMETRI ---
@@ -75,8 +50,8 @@ def train():
 
         for inputs, targets in train_loader:
             inputs = inputs.to(device)
-            t_hm = targets['hm'].to(device)
-            t_off = targets['reg'].to(device)
+            t_hm = targets['hm'].to(device) #target reale per la heatmap
+            t_off = targets['reg'].to(device) #target reale per l'offset
 
             # Forward pass 
             p_hm, p_off = model(inputs)
@@ -90,13 +65,12 @@ def train():
                 loss_heatmap = criterion_hm(p_hm, t_hm)
             
             # 2. Offset Loss (calcolata solo dove c'è un oggetto reale)
-            # Creiamo una maschera dai punti dove la heatmap target è esattamente 1
+            #la loss della offset me la calcolo solo sui pixel dove t_hm è 1 (cioè dove c'è un logo) 
             mask = (t_hm == 1).float() 
-            num_objects = mask.sum() + 1e-4
+            num_objects = mask.sum() + 1e-4#evito la divisione per zero se non ci sono oggetti nell'immagine con questo parametro, la loss dell'offset sarà molto bassa ma non zero
             
             # Applichiamo la maschera su entrambi i canali dell'offset (dx, dy)
-            # Espandiamo la maschera per coprire i 2 canali dell'offset
-            mask_off = mask.repeat(1, 2, 1, 1) 
+            mask_off = mask.repeat(1, 2, 1, 1) # Da [B, 1, H, W] a [B, 2, H, W]
             loss_offset = criterion_reg(p_off * mask_off, t_off * mask_off) / num_objects
 
             # Somma totale: diamo peso maggiore alla heatmap per stabilizzare il training

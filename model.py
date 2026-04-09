@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from utils import get_peaks
 
 class SimpleCenterNet(nn.Module):
     def __init__(self):
@@ -8,15 +9,15 @@ class SimpleCenterNet(nn.Module):
 
         # ENCODER (Downsampling 1/4)
         self.enc = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1, stride=2), # -> 64x64
+            nn.Conv2d(3, 32, kernel_size=3, padding=1, stride=2), 
             nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2), # -> 32x32
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, stride=2), 
             nn.BatchNorm2d(64),
             nn.ReLU()
         )
 
-        # DECODER (Ritorno a 1/4 o risoluzione piena se necessario)
+        # DECODER 
         self.neck = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
@@ -26,7 +27,7 @@ class SimpleCenterNet(nn.Module):
         # HEADS
         self.heatmap_head = nn.Sequential(
             nn.Conv2d(64, 1, kernel_size=1),
-            nn.Sigmoid() 
+            nn.Sigmoid() #schiaccia i valori tra 0 e 1
         )
         
         # L'offset head restituisce 2 canali: dx e dy
@@ -47,32 +48,27 @@ class SimpleCenterNet(nn.Module):
         self.eval()
         # Ottieni SOLO la heatmap per l'inferenza dei picchi
         hm, off = self.forward(x)
-        
-        # NMS via MaxPool
-        hmax = F.max_pool2d(hm, kernel_size=3, stride=1, padding=1)
-        keep = (hmax == hm).float()
-        peaks = hm * keep
-        
-        # Estrazione coordinate
-        indices = torch.nonzero(peaks > threshold)
-        
+
+        # Richiamiamo la funzione di utility per ottenere indici e punteggi
+        indices, scores = get_peaks(hm, threshold=threshold)
+
         if indices.shape[0] > 0:
-            # indices è [N, 4] -> (batch, channel, y, x)
-            # Prendiamo y e x
+            # Estraiamo le informazioni dagli indici restituiti [B, C, Y, X]
             batch_id = indices[:, 0]
-            y = indices[:, 2].float()
-            x_coord = indices[:, 3].float()
-            
-            # Aggiungiamo l'offset se disponibile (opzionale ma consigliato)
-            # off ha shape [Batch, 2, H, W] -> canale 0 è dy, canale 1 è dx
-            dy = off[batch_id, 0, y.long(), x_coord.long()]
-            dx = off[batch_id, 1, y.long(), x_coord.long()]
-            
-            # Applichiamo stride e offset
+            y_coord  = indices[:, 2].float()
+            x_coord  = indices[:, 3].float()
+    
+            # Recupero degli offset (usando gli indici interi per accedere ai tensori)
+            # Ricorda: off ha shape [Batch, 2, H, W] -> canale 0 è dy, canale 1 è dx
+            dy = off[batch_id, 0, y_coord.long(), x_coord.long()]
+            dx = off[batch_id, 1, y_coord.long(), x_coord.long()]
+    
+            # Applicazione dello stride e correzione con l'offset
             res_x = (x_coord + dx) * stride
-            res_y = (y + dy) * stride
-            
-            # Restituiamo un tensore di shape [N, 2] con le coordinate (x, y) dei picchi
+            res_y = (y_coord + dy) * stride
+    
+            # Restituiamo le coordinate finali (N, 2)
             return torch.stack([res_x, res_y], dim=1)
-        # Se non ci sono picchi sopra la soglia, restituiamo un tensore vuoto
+
+        # Se non ci sono picchi sopra la soglia
         return torch.tensor([])
